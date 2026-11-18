@@ -100,7 +100,7 @@ tr.tot td{font-weight:600;border-top:2px solid var(--ink)}
         <button class="btn" id="clear">Clear all</button>
       </div>
     </details>
-    <p class="note" id="sample">Starts with sample readings from the worked example (day 12, hour 13). Leave a box blank if that hour is missing.</p>
+    <p class="note" id="sample">Starts with sample readings from the worked example (day 12, hour 13). All 12 hours are required. Readings from −5 to 0 are accepted, because instruments can drift slightly negative in clean air.</p>
   </section>
 
   <section class="read" aria-live="polite">
@@ -137,12 +137,12 @@ tr.tot td{font-weight:600;border-top:2px solid var(--ink)}
   <div>
     <h2>Breakpoints used</h2>
     <div class="scroll"><table class="bp"><thead><tr><th>Category</th><th>AQI</th><th id="bph">PM2.5 (µg/m³)</th></tr></thead><tbody id="bp"></tbody></table></div>
-    <p class="note">These are the current EPA breakpoints (2024 update). The PM2.5 NowCast is truncated to 0.1 µg/m³ and PM10 to a whole number before converting. AQI is never shown below 0.</p>
+    <p class="note">These are the current EPA breakpoints (2024 update). The PM2.5 NowCast is truncated to 0.1 µg/m³ and PM10 to a whole number before converting. AQI is never shown below 0. Above the top row, the Hazardous formula keeps going, so the AQI can go past 500.</p>
   </div>
   <div>
     <h2>How it works</h2>
     <p style="margin-top:0">NowCast weights recent hours more heavily when the air is changing quickly. The weight factor is 1 − (max − min) ÷ max, kept between 0.5 and 1. Each reading is multiplied by the weight raised to its hours-ago number, and the total is divided by the sum of the weights.</p>
-    <p>EPA requires valid readings for at least 2 of the 3 most recent hours. Missing hours are skipped in both sums. The AQI is then (AQI<sub>hi</sub> − AQI<sub>lo</sub>) ÷ (C<sub>hi</sub> − C<sub>lo</sub>) × (C − C<sub>lo</sub>) + AQI<sub>lo</sub>, rounded to a whole number.</p>
+    <p>This calculator requires all 12 hours. Readings below −5 µg/m³ are rejected as bad data, and a NowCast between −5 and 0 is treated as 0 for the AQI, following AirNow's practice. Above 500, the Hazardous range is extended upward (EPA classes 301 and above as Hazardous). The AQI is (AQI<sub>hi</sub> − AQI<sub>lo</sub>) ÷ (C<sub>hi</sub> − C<sub>lo</sub>) × (C − C<sub>lo</sub>) + AQI<sub>lo</sub>, rounded to a whole number.</p>
   </div>
 </div></section>
 
@@ -156,7 +156,7 @@ const SAMPLE={pm25:["-0.2","1.1","-3.5","0.6","-2.0","-0.9","5.3","2.8","2.2","1
               pm10:["18","22","15","20","24","31","45","52","61","58","49","40"]};
 const $=id=>document.getElementById(id);
 let st={pol:"pm25",vals:{pm25:SAMPLE.pm25.slice(),pm10:SAMPLE.pm10.slice()},clip:false,end:null};
-try{const s=JSON.parse(localStorage.getItem("nowcast-v1")||"null");if(s&&s.vals){st=Object.assign(st,s);$("sample").textContent="Your last readings were restored. Leave a box blank if that hour is missing."}}catch(e){}
+try{const s=JSON.parse(localStorage.getItem("nowcast-v1")||"null");if(s&&s.vals){st=Object.assign(st,s);$("sample").textContent="Your last readings were restored. All 12 hours are required. Readings from −5 to 0 are accepted."}}catch(e){}
 const save=()=>{try{localStorage.setItem("nowcast-v1",JSON.stringify(st))}catch(e){}};
 
 const pad=n=>String(n).padStart(2,"0");
@@ -181,23 +181,23 @@ function toAQI(c,pol){
   if(c<=0)return{aqi:0,row:0};
   const b=BP[pol];
   for(let i=0;i<b.length;i++){const[cl,ch,al,ah]=b[i];if(c<=ch)return{aqi:Math.round((ah-al)/(ch-cl)*(c-cl)+al),row:i,r:b[i]}}
-  return{aqi:500,row:5,beyond:true,r:b[5]};
+  const[cl,ch,al,ah]=b[5];
+  return{aqi:Math.round((ah-al)/(ch-cl)*(c-cl)+al),row:5,beyond:true,r:b[5]};
 }
 
 function calc(){
   const pol=st.pol,ts=times();
   const raw=st.vals[pol].map(s=>{const t=String(s??"").trim();if(t==="")return null;const n=Number(t.replace(",","."));return Number.isFinite(n)?n:NaN});
-  const bad=raw.some(x=>Number.isNaN(x));
-  const vals=raw.map(x=>x==null||Number.isNaN(x)?null:(st.clip?Math.max(0,x):x));
-  const valid=vals.filter(x=>x!=null);
-  const recent=vals.slice(9).filter(x=>x!=null).length;
+  const lst=f=>ts.filter((_,k)=>f(raw[k])).map(fmtT).join(", ");
+  const blank=raw.filter(x=>x==null).length,bad=raw.some(x=>Number.isNaN(x)),low=raw.some(x=>x!=null&&x<-5);
   let warn=[];
-  if(bad)warn.push("One or more boxes contain something that isn't a number. Those hours are being treated as missing.");
-  const out={pol,ts,vals};
-  if(valid.length===0||recent<2){
-    out.ok=false;warn.push(valid.length===0?"Enter some readings to get a result.":"EPA requires valid readings for at least 2 of the 3 most recent hours. Fill in the newest hours to get a result.");
-    return render(out,warn);
-  }
+  const out={pol,ts};
+  if(blank)warn.push(blank==12?"Enter all 12 hours of readings to get a result.":`All 12 hours are required. Missing: ${lst(x=>x==null)}.`);
+  if(bad)warn.push(`These hours don't contain a number: ${lst(x=>Number.isNaN(x))}.`);
+  if(low)warn.push(`Readings below −5 µg/m³ aren't valid. Small negatives come from instrument drift, but anything lower is a bad reading. Check: ${lst(x=>x!=null&&x<-5)}.`);
+  if(warn.length){out.ok=false;return render(out,warn)}
+  const vals=raw.map(x=>st.clip?Math.max(0,x):x),valid=vals;
+  out.vals=vals;
   const mx=Math.max(...valid),mn=Math.min(...valid),rng=mx-mn;
   const scaled=mx>0?rng/mx:NaN, w1=mx>0?1-scaled:NaN;
   const w=mx>0?Math.min(Math.max(w1,0.5),1):1;
@@ -205,8 +205,8 @@ function calc(){
   const nc=num/den,ncT=trunc(nc,DEC[pol]);
   const a=toAQI(ncT,pol);
   if(mx<=0)warn.push("Every reading is zero or negative, so the weight factor can't be calculated. The NowCast is a plain average and the AQI is 0.");
-  if(a.beyond)warn.push("This concentration is above the top of the AQI scale, so it's shown as 500.");
-  if(valid.length<12)warn.push(`${12-valid.length} hour${valid.length==11?" is":"s are"} missing and were skipped in both sums.`);
+  else if(ncT<0)warn.push("The NowCast came out slightly negative. As AirNow does, it's treated as 0 for the AQI.");
+  if(a.beyond)warn.push("Above 500, the AQI is calculated by extending the top Hazardous range upward. EPA classes every AQI of 301 and above as Hazardous.");
   Object.assign(out,{ok:true,mx,mn,rng,scaled,w1,w,num,den,nc,ncT,rows},a);
   render(out,warn);
 }
@@ -216,12 +216,12 @@ function render(o,warn){
   $("dk").textContent=NAME[o.pol]+" AQI";
   $("warn").innerHTML=warn.map(s=>`<div>${s}</div>`).join("");
   const dial=$("dial");
-  if(!o.ok){$("dn").textContent="–";$("dc").textContent="Not enough data";$("ds").textContent="";dial.style.setProperty("--cat","var(--line)");dial.style.setProperty("--catInk","var(--ink)");$("mk").style.display="none";$("steps").innerHTML="";$("tbl").innerHTML="";return}
+  if(!o.ok){$("dn").textContent="–";$("dc").textContent="Check your readings";$("ds").textContent="";dial.style.setProperty("--cat","var(--line)");dial.style.setProperty("--catInk","var(--ink)");$("mk").style.display="none";$("steps").innerHTML="";$("tbl").innerHTML="";return}
   const c=CATS[o.row];
   $("dn").textContent=o.aqi;$("dc").textContent=c[0];
   $("ds").textContent=`NowCast ${o.ncT.toFixed(d)}${u} for the hour ending ${fmtT(o.ts[11])}`;
   dial.style.setProperty("--cat",c[1]);dial.style.setProperty("--catInk",c[2]);
-  const stops=[0,50,100,150,200,300,500],seg=100/6;let pos=0;
+  const stops=[0,50,100,150,200,300,500],seg=100/6;let pos=100;
   for(let i=0;i<6;i++){if(o.aqi<=stops[i+1]){pos=(i+(o.aqi-stops[i])/(stops[i+1]-stops[i]))*seg;break}}
   $("mk").style.display="block";$("mk").style.left=Math.min(Math.max(pos,0.8),99.2)+"%";
   const r=o.r,S=[
